@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pydantic-settings
+pymongo
+langchain
+PyMuPDF
+python-multipart
+google-generativeai
