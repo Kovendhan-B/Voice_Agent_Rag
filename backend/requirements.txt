@@ -5,4 +5,4 @@ pymongo
 langchain
 PyMuPDF
 python-multipart
-google-generativeai
+google-genai

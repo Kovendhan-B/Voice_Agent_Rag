@@ -1,12 +1,19 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.db.mongo import ensure_chunk_indexes
 from app.api.upload import router as upload_router
 from app.config import get_settings
 
 settings = get_settings()
 
 app = FastAPI(title="Voice Research Assistant API")
+
+
+@app.on_event("startup")
+def initialize_ingestion_dependencies() -> None:
+    # Fail fast if MongoDB is unavailable or index creation fails.
+    ensure_chunk_indexes()
 
 app.add_middleware(
     CORSMiddleware,

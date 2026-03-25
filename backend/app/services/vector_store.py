@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from pymongo.collection import Collection
+from pymongo.operations import UpdateOne
 
 
 def build_chunk_documents(
@@ -35,3 +36,19 @@ def insert_chunk_documents(collection: Collection, documents: list[dict]) -> int
 
 	result = collection.insert_many(documents, ordered=True)
 	return len(result.inserted_ids)
+
+
+def upsert_chunk_documents(collection: Collection, documents: list[dict]) -> int:
+	if not documents:
+		return 0
+
+	operations = [
+		UpdateOne(
+			{"paper_id": doc["paper_id"], "chunk_index": doc["chunk_index"]},
+			{"$set": doc},
+			upsert=True,
+		)
+		for doc in documents
+	]
+	result = collection.bulk_write(operations, ordered=True)
+	return int(result.upserted_count + result.modified_count)

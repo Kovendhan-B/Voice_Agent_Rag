@@ -8,9 +8,13 @@ from app.config import get_settings
 from app.db.mongo import get_chunks_collection
 from app.models.schemas import UploadResponse
 from app.services.chunker import chunk_pages
-from app.services.embedder import GeminiEmbedder
+from app.services.embedder import (
+	EmbeddingValidationError,
+	GeminiEmbedder,
+	RetryableEmbeddingError,
+)
 from app.services.pdf_processor import extract_text_by_page
-from app.services.vector_store import build_chunk_documents, insert_chunk_documents
+from app.services.vector_store import build_chunk_documents, upsert_chunk_documents
 
 router = APIRouter(prefix="/api", tags=["upload"])
 
@@ -48,6 +52,12 @@ async def upload_pdf(file: UploadFile = File(...)) -> UploadResponse:
 					status_code=status.HTTP_400_BAD_REQUEST,
 					detail="Uploaded file is empty.",
 				)
+			max_size_bytes = settings.max_upload_file_size_mb * 1024 * 1024
+			if len(content) > max_size_bytes:
+				raise HTTPException(
+					status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+					detail=f"Uploaded file exceeds {settings.max_upload_file_size_mb} MB limit.",
+				)
 			tmp.write(content)
 
 		# 4) Extract text per page.
@@ -70,8 +80,14 @@ async def upload_pdf(file: UploadFile = File(...)) -> UploadResponse:
 			api_key=settings.gemini_api_key,
 			model=settings.embedding_model,
 			expected_dimension=settings.embedding_dimension,
+			max_retries=settings.embedding_max_retries,
+			retry_base_delay_sec=settings.embedding_retry_base_delay_sec,
+			rate_limit_per_minute=settings.embedding_rate_limit_per_minute,
 		)
-		embeddings = embedder.embed_texts([str(chunk["text"]) for chunk in chunks])
+		embeddings = embedder.embed_texts(
+			[str(chunk["text"]) for chunk in chunks],
+			batch_size=settings.embedding_batch_size,
+		)
 
 		# 7) Insert many chunk documents into Mongo.
 		paper_id = str(uuid4())
@@ -81,7 +97,7 @@ async def upload_pdf(file: UploadFile = File(...)) -> UploadResponse:
 			embeddings=embeddings,
 		)
 		collection = get_chunks_collection()
-		inserted_count = insert_chunk_documents(collection, documents)
+		inserted_count = upsert_chunk_documents(collection, documents)
 
 		# 8) Return response.
 		return UploadResponse(
@@ -89,6 +105,16 @@ async def upload_pdf(file: UploadFile = File(...)) -> UploadResponse:
 			chunk_count=inserted_count,
 			status="uploaded",
 		)
+	except RetryableEmbeddingError as exc:
+		raise HTTPException(
+			status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+			detail=f"Embedding service temporarily unavailable: {exc}",
+		) from exc
+	except EmbeddingValidationError as exc:
+		raise HTTPException(
+			status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+			detail=f"Embedding validation failed: {exc}",
+		) from exc
 	except HTTPException:
 		raise
 	except Exception as exc:
